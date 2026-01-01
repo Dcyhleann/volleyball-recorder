@@ -1,302 +1,397 @@
-import streamlit as st
+import tkinter as tk
+from tkinter import ttk, messagebox
 import pandas as pd
 from datetime import datetime
-import io
 
-# ==========================================
-# 0. 全域設定與常數
-# ==========================================
-st.set_page_config(layout="wide", page_title="排球比賽紀錄系統 Pro")
+class VolleyballRecorder:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("排球比賽即時紀錄系統 (專業版 v3.0)")
+        self.root.geometry("1400x900")
 
-# 依照 Excel 圖片定義的統計表顯示順序
-ACTION_ORDER = [
-    "發球繼續", "發球得分", "發球失誤",
-    "攔網繼續", "攔網得分", "攔網失誤",
-    "接發繼續", "接發好球繼續", "接發失誤",
-    "接球繼續", "接球好球繼續", "接球失誤",
-    "舉球繼續", "舉球好球繼續", "舉球失誤",
-    "攻擊繼續", "攻擊得分", "攻擊失誤", "攻擊被攔",
-    "送球繼續", "送球失誤",
-    "防守犯規", "站位失誤" # 其他
-]
-
-# 預設球員名單 (可透過介面修改)
-DEFAULT_PLAYERS = [
-    {"背號": "3", "姓名": "存睿"},
-    {"背號": "12", "姓名": "哲綸"},
-    {"背號": "17", "姓名": "品融"},
-    {"背號": "11", "姓名": "凱威"},
-    {"背號": "7", "姓名": "譽鍇"},
-    {"背號": "13", "姓名": "沈威"},
-    {"背號": "22", "姓名": "恩岳"},
-    {"背號": "18", "姓名": "安絡"}
-]
-
-# ==========================================
-# 1. Session State 初始化
-# ==========================================
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
-if 'my_score' not in st.session_state:
-    st.session_state.my_score = 0
-if 'enemy_score' not in st.session_state:
-    st.session_state.enemy_score = 0
-if 'current_player' not in st.session_state:
-    st.session_state.current_player = None
-# 比賽資訊設定
-if 'game_info' not in st.session_state:
-    st.session_state.game_info = {
-        "date": datetime.now().date(),
-        "opponent": "對手球隊",
-        "set_num": 1,
-        "players": DEFAULT_PLAYERS
-    }
-
-# ==========================================
-# 2. 側邊欄/頂部設定區 (需求 11)
-# ==========================================
-with st.expander("⚙️ 比賽與球員設定 (點擊展開修改)", expanded=False):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.session_state.game_info['date'] = st.date_input("比賽日期", value=st.session_state.game_info['date'])
-    with c2:
-        st.session_state.game_info['opponent'] = st.text_input("對手名稱", value=st.session_state.game_info['opponent'])
-    with c3:
-        st.session_state.game_info['set_num'] = st.number_input("目前局數", min_value=1, value=st.session_state.game_info['set_num'])
-    
-    st.write("球員名單管理 (直接修改表格內容)：")
-    # 讓使用者可以編輯球員名單
-    edited_players = st.data_editor(
-        st.session_state.game_info['players'], 
-        num_rows="dynamic", # 允許新增/刪除球員
-        key="player_editor"
-    )
-    # 更新球員名單
-    st.session_state.game_info['players'] = edited_players
-
-# 取得當前球員清單 (整理成按鈕要用的格式)
-current_player_list = [f"{p['背號']} {p['姓名']}" for p in st.session_state.game_info['players']]
-player_dict = {p['背號']: f"{p['背號']} {p['姓名']}" for p in st.session_state.game_info['players']}
-
-# ==========================================
-# 3. 核心邏輯函數
-# ==========================================
-def add_log(player_num, action, effect):
-    # 1. 檢查是否選取球員 (對手失誤除外)
-    if player_num is None and action != "對手失誤":
-        st.toast("⚠️ 請先選擇球員！", icon="⚠️")
-        return
-
-    # 2. 處理比分
-    current_my = st.session_state.my_score
-    current_enemy = st.session_state.enemy_score
-    
-    score_snapshot = "" # 預設為空，只有得分改變才填入 (需求 8)
-    
-    if effect == 'win':
-        st.session_state.my_score += 1
-        score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}"
-    elif effect == 'lose':
-        st.session_state.enemy_score += 1
-        score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}"
-    
-    # 3. 新增紀錄
-    new_log = {
-        "時間": datetime.now().strftime("%H:%M:%S"),
-        "背號": player_num if player_num else "對手",
-        "動作": action,
-        "結果": "得分" if effect == 'win' else "失分" if effect == 'lose' else "繼續",
-        "比分": score_snapshot
-    }
-    st.session_state.logs.append(new_log)
-    
-    # 4. 紀錄完後取消選擇球員 (需求 2)
-    st.session_state.current_player = None 
-
-# ==========================================
-# 4. 主畫面佈局
-# ==========================================
-# 比分板
-col_score1, col_score2, col_reset = st.columns([2, 2, 1])
-with col_score1:
-    st.metric("我方 (Home)", st.session_state.my_score)
-with col_score2:
-    st.metric(f"{st.session_state.game_info['opponent']} (Guest)", st.session_state.enemy_score)
-with col_reset:
-    # 需求 6: 歸零確認
-    if st.button("🔄 新局/歸零", type="secondary"):
-        with st.popover("確定要清空資料嗎？"):
-            st.write("這將會刪除目前所有紀錄與比分。")
-            if st.button("⚠️ 確認刪除", type="primary"):
-                st.session_state.logs = []
-                st.session_state.my_score = 0
-                st.session_state.enemy_score = 0
-                st.session_state.current_player = None
-                st.rerun()
-
-st.divider()
-
-# 切分左右區塊：左邊操作 (70%)，右邊統計 (30%) (需求 5)
-left_panel, right_panel = st.columns([7, 3])
-
-# ==========================================
-# 左側：操作區
-# ==========================================
-with left_panel:
-    # --- 1. 球員選擇區 ---
-    # 依照目前設定的球員產生按鈕
-    cols = st.columns(6) # 一排6個
-    for idx, p_data in enumerate(st.session_state.game_info['players']):
-        p_num = p_data['背號']
-        p_name = p_data['姓名']
-        label = f"{p_num}\n{p_name}"
+        # --- 初始化變數 ---
+        self.match_date = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        self.opponent = tk.StringVar(value="對手")
+        self.set_number = tk.IntVar(value=1)
+        self.our_score = tk.IntVar(value=0)
+        self.opp_score = tk.IntVar(value=0)
         
-        # 判斷是否選中 (需求 1: 紅色亮起)
-        is_selected = (st.session_state.current_player == p_num)
+        self.selected_player = tk.StringVar()
+        self.current_records = []
         
-        with cols[idx % 6]:
-            if st.button(label, key=f"btn_{p_num}", type="primary" if is_selected else "secondary", use_container_width=True):
-                if is_selected:
-                    st.session_state.current_player = None # 再次點擊取消
-                else:
-                    st.session_state.current_player = p_num
-                st.rerun()
+        # 完整球員名單 (資料庫)
+        self.full_roster = {
+            "1": {"name": "小明", "pos": "舉球"},
+            "2": {"name": "大華", "pos": "大砲"},
+            "3": {"name": "阿龍", "pos": "大砲"},
+            "4": {"name": "小瑋", "pos": "攔中"},
+            "5": {"name": "阿強", "pos": "攔中"},
+            "6": {"name": "小傑", "pos": "舉對"},
+            "7": {"name": "阿文", "pos": "自由"},
+            "8": {"name": "板凳A", "pos": "大砲"},
+            "9": {"name": "板凳B", "pos": "發球"},
+            "10": {"name": "板凳C", "pos": "攔中"},
+        }
+        
+        # 目前場上按鈕對應的背號 (依序對應 Button 1 ~ Button 7)
+        # 這裡直接存背號，方便對應
+        self.active_slots = ["1", "2", "3", "4", "5", "6", "7"]
 
-    st.markdown("---")
+        # --- 動作定義 ---
+        self.actions_continue = {
+            "發球": ["發球"],
+            "攔網": ["攔網"],
+            "接發": ["接發A", "接發B"],
+            "接球": ["接球A", "接球B"],
+            "舉球": ["舉球"],
+            "攻擊/送球": ["攻擊", "處理球"]
+        }
+        self.actions_score = {
+            "發球": ["發球得分"],
+            "攻擊": ["攻擊得分", "吊球得分", "後排得分", "快攻得分", "修正得分"],
+            "攔網": ["攔網得分"],
+            "對手": [
+                "對手發球出界", "對手發球掛網", "對手發球犯規",
+                "對手攻擊出界", "對手攻擊掛網", "對手送球失誤", 
+                "對手攻擊犯規", "對手舉球失誤", "對手舉球犯規", 
+                "對手防守犯規", "對手攔網犯規"
+            ]
+        }
+        self.actions_error = {
+            "發球": ["發球出界", "發球掛網", "發球犯規"],
+            "攻擊": ["攻擊出界", "攻擊掛網", "攻擊被攔", "攻擊犯規", "觸網"],
+            "舉球": ["舉球失誤", "連擊"],
+            "防守": ["接發失誤", "接球失誤", "防守噴球", "防守落地"],
+            "攔網": ["攔網觸網", "攔網出界"]
+        }
 
-    # --- 2. 動作按鈕區 ---
-    # 定義動作按鈕的排版
-    tab_cont, tab_score, tab_error = st.tabs(["🔁 繼續 (Touch)", "🟢 得分 (Point)", "🔴 失誤 (Error)"])
+        self.setup_ui()
 
-    def action_btn(label, action_name, effect):
-        if st.button(label, use_container_width=True):
-            add_log(st.session_state.current_player, action_name, effect)
-            st.rerun()
+    def setup_ui(self):
+        # 1. 頂部設定區
+        top_frame = tk.Frame(self.root, pady=10)
+        top_frame.pack(fill="x")
 
-    with tab_cont:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: action_btn("發球繼續", "發球繼續", "cont"); action_btn("送球繼續", "送球繼續", "cont")
-        with c2: action_btn("接發球", "接發繼續", "cont"); action_btn("接發到位", "接發好球繼續", "cont")
-        with c3: action_btn("一般接球", "接球繼續", "cont"); action_btn("接球到位", "接球好球繼續", "cont")
-        with c4: action_btn("舉球", "舉球繼續", "cont"); action_btn("舉球到位", "舉球好球繼續", "cont")
-        
-        st.caption("攻擊/攔網")
-        c5, c6, c7, c8 = st.columns(4)
-        with c5: action_btn("攻擊繼續", "攻擊繼續", "cont")
-        with c6: action_btn("攔網繼續", "攔網繼續", "cont")
-        
-    with tab_score:
-        c1, c2, c3 = st.columns(3)
-        with c1: action_btn("攻擊得分 🏐", "攻擊得分", "win")
-        with c2: action_btn("攔網得分 ✋", "攔網得分", "win")
-        with c3: action_btn("發球得分 🎯", "發球得分", "win")
-        st.caption("其他")
-        if st.button("對手失誤 (送分)", use_container_width=True):
-            add_log(None, "對手失誤", "win")
-            st.rerun()
+        tk.Label(top_frame, text="日期:").pack(side="left", padx=5)
+        tk.Entry(top_frame, textvariable=self.match_date, width=12).pack(side="left")
+        tk.Label(top_frame, text="對手:").pack(side="left", padx=5)
+        tk.Entry(top_frame, textvariable=self.opponent, width=10).pack(side="left")
+        tk.Label(top_frame, text="局數:").pack(side="left", padx=5)
+        tk.Entry(top_frame, textvariable=self.set_number, width=5).pack(side="left")
 
-    with tab_error:
-        c1, c2, c3 = st.columns(3)
-        with c1: action_btn("發球失誤", "發球失誤", "lose"); action_btn("接發失誤", "接發失誤", "lose")
-        with c2: action_btn("攻擊失誤", "攻擊失誤", "lose"); action_btn("攻擊被攔", "攻擊被攔", "lose")
-        with c3: action_btn("舉球/防守失誤", "舉球失誤", "lose"); action_btn("站位/犯規", "防守犯規", "lose")
-        # 補上其他可能的失誤
-        action_btn("攔網失誤", "攔網失誤", "lose")
+        score_label = tk.Label(top_frame, text=" 比分 ", font=("Arial", 20, "bold"))
+        score_label.pack(side="left", padx=20)
+        tk.Label(top_frame, textvariable=self.our_score, font=("Arial", 24, "bold"), fg="blue").pack(side="left")
+        tk.Label(top_frame, text=" : ", font=("Arial", 24)).pack(side="left")
+        tk.Label(top_frame, textvariable=self.opp_score, font=("Arial", 24, "bold"), fg="red").pack(side="left")
 
-    st.markdown("### 📝 紀錄明細 (可直接修改)")
-    # --- 3. 紀錄編輯區 (需求 7, 8, 9) ---
-    if len(st.session_state.logs) > 0:
-        # 將 logs 轉為 DataFrame
-        df_logs = pd.DataFrame(st.session_state.logs)
-        
-        # 使用 data_editor 讓使用者可以編輯、刪除
-        # num_rows="dynamic" 允許增刪行
-        edited_df = st.data_editor(
-            df_logs, 
-            use_container_width=True, 
-            height=300,  # 固定高度，可捲動 (需求 7)
-            num_rows="dynamic",
-            column_config={
-                "比分": st.column_config.TextColumn("比分", disabled=False)
-            },
-            key="log_editor" 
-        )
-        
-        # 關鍵：將編輯後的資料寫回 session_state，讓統計表連動更新 (需求 9)
-        # 注意：雖然這裡直接覆蓋，但比分欄位的邏輯不會自動重算（這很複雜），
-        # 但統計數據會根據「動作」和「背號」重新計算。
-        st.session_state.logs = edited_df.to_dict('records')
-    else:
-        st.info("尚無紀錄")
+        tk.Button(top_frame, text="新局/歸零", command=self.reset_game, bg="orange").pack(side="right", padx=10)
+        tk.Button(top_frame, text="匯出 Excel", command=self.save_to_excel, bg="green", fg="white").pack(side="right", padx=10)
 
-# ==========================================
-# 右側：統計區 (需求 3, 4, 5)
-# ==========================================
-with right_panel:
-    st.subheader("📊 即時統計")
-    
-    if len(st.session_state.logs) > 0:
-        df = pd.DataFrame(st.session_state.logs)
+        # 2. 主要操作區
+        main_pane = tk.PanedWindow(self.root, orient="horizontal")
+        main_pane.pack(fill="both", expand=True, padx=5, pady=5)
+        left_frame = tk.Frame(main_pane)
+        right_frame = tk.Frame(main_pane)
+        main_pane.add(left_frame, minsize=800)
+        main_pane.add(right_frame)
+
+        # --- 左側：球員選擇區 (修改重點) ---
+        # 標題列包含「陣容設定」按鈕
+        player_header_frame = tk.Frame(left_frame)
+        player_header_frame.pack(fill="x", pady=5)
         
-        # 1. 建立樞紐分析表
-        # index=動作, columns=背號
-        pivot = df.pivot_table(
-            index="動作", 
-            columns="背號", 
-            values="時間", 
-            aggfunc='count', 
-            fill_value=0
-        )
+        tk.Label(player_header_frame, text="場上球員 (點擊選取)", font=("Arial", 12, "bold")).pack(side="left")
         
-        # 2. 確保所有「目前設定的球員」都在欄位中 (依照背號順序)
-        current_player_nums = [p['背號'] for p in st.session_state.game_info['players']]
-        for p in current_player_nums:
-            if p not in pivot.columns:
-                pivot[p] = 0
+        # [NEW] 管理陣容的按鈕
+        tk.Button(player_header_frame, text="⚙️ 設定先發/換人", command=self.open_lineup_settings, 
+                  bg="#4a90e2", fg="white", font=("Arial", 10, "bold")).pack(side="left", padx=20)
+
+        # 球員按鈕容器
+        self.player_buttons_frame = tk.Frame(left_frame)
+        self.player_buttons_frame.pack(fill="x", padx=5, pady=5)
+        self.refresh_player_buttons()
+
+        # --- 左側：動作按鈕區 ---
+        action_container = tk.Frame(left_frame)
+        action_container.pack(fill="both", expand=True)
+
+        cont_frame = tk.LabelFrame(action_container, text="繼續 (無分)", fg="blue", font=("Arial", 11, "bold"))
+        cont_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.create_grid_buttons(cont_frame, self.actions_continue, "blue")
+
+        score_frame = tk.LabelFrame(action_container, text="得分 (本隊+1)", fg="green", font=("Arial", 11, "bold"))
+        score_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        self.create_grid_buttons(score_frame, self.actions_score, "green")
+
+        error_frame = tk.LabelFrame(action_container, text="失誤 (對手+1)", fg="red", font=("Arial", 11, "bold"))
+        error_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=2, pady=2)
+        self.create_grid_buttons(error_frame, self.actions_error, "red")
         
-        # 欄位排序 (依照設定的順序)
-        existing_cols = [c for c in current_player_nums if c in pivot.columns]
-        pivot = pivot[existing_cols] # 只保留我們名單內的，並照順序
+        action_container.grid_columnconfigure(0, weight=1)
+        action_container.grid_columnconfigure(1, weight=1)
+
+        # --- 右側：紀錄與統計 ---
+        log_frame = tk.LabelFrame(right_frame, text="紀錄明細 (雙擊編輯)", font=("Arial", 10))
+        log_frame.pack(fill="both", expand=True, pady=5)
+
+        cols = ("No", "背號", "動作", "結果", "比分")
+        self.tree = ttk.Treeview(log_frame, columns=cols, show="headings", height=15)
+        for col in cols:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=50, anchor="center")
+        self.tree.column("動作", width=120)
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<Double-1>", self.on_tree_double_click)
+
+        tk.Button(log_frame, text="刪除選取紀錄", command=self.delete_record, bg="pink").pack(fill="x")
+
+        stats_frame = tk.LabelFrame(right_frame, text="即時統計", font=("Arial", 10))
+        stats_frame.pack(fill="both", expand=True, pady=5)
+        self.stats_text = tk.Text(stats_frame, width=40, height=20, state="disabled")
+        self.stats_text.pack(fill="both", expand=True)
+        self.stats_text.tag_config("title", font=("Arial", 10, "bold"), background="#ddd")
+        self.stats_text.tag_config("score", foreground="green")
+        self.stats_text.tag_config("error", foreground="red")
+        self.stats_text.tag_config("cont", foreground="blue")
+
+    # --- [NEW] 陣容管理邏輯 ---
+    def open_lineup_settings(self):
+        """ 開啟設定視窗，讓使用者指定 7 個按鈕分別是誰 """
+        win = tk.Toplevel(self.root)
+        win.title("設定場上球員 (換人)")
+        win.geometry("400x500")
+
+        tk.Label(win, text="請分配 7 個按鈕對應的球員", font=("Arial", 12)).pack(pady=10)
+
+        # 準備下拉選單的選項 (格式: "背號 - 名字")
+        roster_options = [f"{k} - {v['name']} ({v['pos']})" for k, v in self.full_roster.items()]
         
-        # 3. 確保所有「定義好的動作」都在列中 (依照 Excel 圖片順序)
-        pivot = pivot.reindex(ACTION_ORDER, fill_value=0)
+        # 暫存選擇結果的變數
+        combo_vars = []
         
-        # 4. 移除完全沒有數據且不在 ACTION_ORDER 裡的雜項 (Optional)
-        # 但為了符合你的固定順序需求，我們主要依賴 reindex
-        
-        # 5. 計算「個人得分總和」與「個人失分總和」 (需求 4)
-        # 定義哪些動作算得分，哪些算失分
-        score_actions = ["發球得分", "攻擊得分", "攔網得分"] # 根據你的邏輯增減
-        error_actions = ["發球失誤", "接發失誤", "接球失誤", "舉球失誤", "攻擊失誤", "攻擊被攔", "攔網失誤", "送球失誤", "防守犯規", "站位失誤"]
-        
-        # 計算總和
-        total_score_row = pivot.loc[pivot.index.intersection(score_actions)].sum()
-        total_error_row = pivot.loc[pivot.index.intersection(error_actions)].sum()
-        
-        # 將總和加回 DataFrame 底部
-        pivot.loc['個人得分總和'] = total_score_row
-        pivot.loc['個人失分總和'] = total_error_row
-        
-        # 6. 顯示表格
-        st.dataframe(pivot, use_container_width=True, height=700)
-        
-        # ==========================================
-        # Excel 下載區 (需求 10)
-        # ==========================================
-        # 產生 Excel 檔案 (包含兩個 Sheet)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Sheet 1: 統計表
-            pivot.to_excel(writer, sheet_name='統計數據')
-            # Sheet 2: 流水帳
-            df.to_excel(writer, sheet_name='詳細流水帳', index=False)
+        # 建立 7 個下拉選單
+        for i in range(7):
+            frame = tk.Frame(win)
+            frame.pack(fill="x", padx=20, pady=5)
             
-        st.download_button(
-            label="📥 下載 Excel (.xlsx)",
-            data=output.getvalue(),
-            file_name=f"volleyball_stats_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            tk.Label(frame, text=f"按鈕 {i+1}:", width=8).pack(side="left")
+            
+            combo = ttk.Combobox(frame, values=roster_options, state="readonly", width=25)
+            combo.pack(side="left")
+            
+            # 設定預設值 (讀取目前 active_slots)
+            current_num = self.active_slots[i] if i < len(self.active_slots) else ""
+            # 找到對應的選項文字
+            for opt in roster_options:
+                if opt.startswith(f"{current_num} -"):
+                    combo.set(opt)
+                    break
+            
+            combo_vars.append(combo)
+
+        def save_lineup():
+            new_slots = []
+            for combo in combo_vars:
+                val = combo.get()
+                if val:
+                    # 從 "1 - 小明 (舉球)" 擷取 "1"
+                    num = val.split(" - ")[0]
+                    new_slots.append(num)
+                else:
+                    # 如果沒選，為了防呆，可以塞個空或者保留原值，這裡假設一定要選
+                    pass
+            
+            if len(new_slots) != 7:
+                 messagebox.showwarning("提示", "請確保 7 個按鈕都設定了球員 (若無自由球員可重複選別人或設空位)")
+                 # 這裡簡單處理，允許存入
+            
+            self.active_slots = new_slots
+            self.refresh_player_buttons() # 更新主畫面
+            
+            # 自動記錄換人事件 (可選)
+            self.log_action("系統", "進行換人/陣容調整", 0)
+            
+            win.destroy()
+
+        tk.Button(win, text="確認變更", command=save_lineup, bg="#4a90e2", fg="white", font=("Arial", 12)).pack(pady=20)
+
+    def refresh_player_buttons(self):
+        """ 根據 active_slots 繪製按鈕，純點擊選取 """
+        for widget in self.player_buttons_frame.winfo_children():
+            widget.destroy()
+
+        for num in self.active_slots:
+            p_data = self.full_roster.get(num, {"name": "空", "pos": "-"})
+            text = f"{num}\n{p_data['name']}\n({p_data['pos']})"
+            
+            btn = tk.Button(self.player_buttons_frame, text=text, width=8, height=3,
+                            command=lambda n=num: self.select_player(n))
+            btn.pack(side="left", padx=2)
+
+            if self.selected_player.get() == num:
+                btn.config(bg="yellow", relief="sunken")
+            else:
+                btn.config(bg="#f0f0f0", relief="raised")
+
+    def select_player(self, num):
+        self.selected_player.set(num)
+        self.refresh_player_buttons()
+
+    def create_grid_buttons(self, parent, action_dict, color_theme):
+        row_idx = 0
+        bg_color = "#e0f7fa" if color_theme == "blue" else ("#e8f5e9" if color_theme == "green" else "#ffebee")
+
+        for category, actions in action_dict.items():
+            lbl = tk.Label(parent, text=category, bg="gray", fg="white", width=8)
+            lbl.grid(row=row_idx, column=0, padx=1, pady=1, sticky="ns")
+            
+            btn_frame = tk.Frame(parent)
+            btn_frame.grid(row=row_idx, column=1, sticky="w", padx=1, pady=1)
+            
+            for act_name in actions:
+                res_type = 0
+                if color_theme == "green": res_type = 1
+                if color_theme == "red": res_type = -1
+                if "對手" in category: res_type = 1 
+
+                tk.Button(btn_frame, text=act_name, bg=bg_color, width=12,
+                          command=lambda a=act_name, r=res_type: self.process_action(a, r)).pack(side="left", padx=1)
+            row_idx += 1
+
+    def process_action(self, action_name, result_type):
+        player = self.selected_player.get()
+        if not player and "對手" not in action_name:
+            messagebox.showwarning("操作錯誤", "請先選擇一位球員！")
+            return
+
+        if result_type == 1:
+            self.our_score.set(self.our_score.get() + 1)
+        elif result_type == -1:
+            self.opp_score.set(self.opp_score.get() + 1)
         
-    else:
-        st.caption("等待紀錄中...")
+        self.log_action(player if "對手" not in action_name else "對手", action_name, result_type)
+
+    def log_action(self, player, action, result_type):
+        current_score = f"{self.our_score.get()}:{self.opp_score.get()}"
+        res_text = "繼續"
+        if result_type == 1: res_text = "得分"
+        elif result_type == -1: res_text = "失誤"
+        
+        record = {
+            "Time": datetime.now().strftime("%H:%M:%S"),
+            "Player": player,
+            "Action": action,
+            "Result": res_text,
+            "Score": current_score,
+            "ResultType": result_type
+        }
+        self.current_records.append(record)
+        
+        # 顯示在最上面
+        self.tree.insert("", 0, values=(
+            len(self.current_records), player, action, res_text, current_score
+        ))
+        self.update_statistics()
+
+    def on_tree_double_click(self, event):
+        item_id = self.tree.selection()
+        if not item_id: return
+        
+        item = self.tree.item(item_id)
+        vals = item['values']
+        
+        edit_win = tk.Toplevel(self.root)
+        edit_win.title("編輯紀錄")
+        
+        tk.Label(edit_win, text="背號:").grid(row=0, column=0)
+        p_list = list(self.full_roster.keys()) + ["對手"]
+        p_combo = ttk.Combobox(edit_win, values=p_list)
+        p_combo.set(vals[1])
+        p_combo.grid(row=0, column=1)
+
+        tk.Label(edit_win, text="動作:").grid(row=1, column=0)
+        all_acts = []
+        for d in [self.actions_continue, self.actions_score, self.actions_error]:
+            for k, v in d.items():
+                all_acts.extend(v)
+        a_combo = ttk.Combobox(edit_win, values=all_acts)
+        a_combo.set(vals[2])
+        a_combo.grid(row=1, column=1)
+        
+        def save_edit():
+            new_p = p_combo.get()
+            new_a = a_combo.get()
+            self.tree.item(item_id, values=(vals[0], new_p, new_a, vals[3], vals[4]))
+            
+            # 更新內部 list (簡單版：只透過 list index 反查)
+            list_idx = len(self.current_records) - int(vals[0])
+            if 0 <= list_idx < len(self.current_records):
+                 self.current_records[list_idx]['Player'] = new_p
+                 self.current_records[list_idx]['Action'] = new_a
+            
+            self.update_statistics()
+            edit_win.destroy()
+
+        tk.Button(edit_win, text="儲存", command=save_edit).grid(row=3, column=0, columnspan=2)
+
+    def delete_record(self):
+        selected = self.tree.selection()
+        if not selected: return
+        confirm = messagebox.askyesno("確認", "確定要刪除此紀錄嗎？")
+        if confirm:
+            self.tree.delete(selected)
+
+    def update_statistics(self):
+        self.stats_text.config(state="normal")
+        self.stats_text.delete(1.0, "end")
+        
+        stats = {}
+        for r in self.current_records:
+            p = r['Player']
+            if p == "對手": continue
+            if p not in stats: stats[p] = {"score": 0, "error": 0, "cont": 0}
+            
+            if r['ResultType'] == 1: stats[p]['score'] += 1
+            elif r['ResultType'] == -1: stats[p]['error'] += 1
+            else: stats[p]['cont'] += 1
+            
+        header = f"{'背號':<6}{'得分':<6}{'失誤':<6}{'繼續':<6}\n"
+        self.stats_text.insert("end", header, "title")
+        self.stats_text.insert("end", "-"*30 + "\n")
+        
+        for p, d in stats.items():
+            line_start = f"{p:<8}"
+            self.stats_text.insert("end", line_start)
+            self.stats_text.insert("end", f"{d['score']:<8}", "score")
+            self.stats_text.insert("end", f"{d['error']:<8}", "error")
+            self.stats_text.insert("end", f"{d['cont']:<8}\n", "cont")
+        self.stats_text.config(state="disabled")
+
+    def reset_game(self):
+        ans = messagebox.askyesno("新局", "確定要開始新的一局嗎？")
+        if ans:
+            self.our_score.set(0)
+            self.opp_score.set(0)
+            self.current_records = []
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            self.update_statistics()
+
+    def save_to_excel(self):
+        if not self.current_records:
+            messagebox.showinfo("提示", "無紀錄")
+            return
+        df = pd.DataFrame(self.current_records)
+        filename = f"{self.match_date.get()}_{self.opponent.get()}_Set{self.set_number.get()}.xlsx"
+        filename = filename.replace("/", "").replace(":", "")
+        try:
+            df.to_excel(filename, index=False)
+            messagebox.showinfo("成功", f"存檔成功: {filename}")
+        except Exception as e:
+            messagebox.showerror("錯誤", f"存檔失敗: {e}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VolleyballRecorder(root)
+    root.mainloop()
