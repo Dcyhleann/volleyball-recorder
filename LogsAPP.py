@@ -1,13 +1,40 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import io
 
 # ==========================================
-# 1. 設定與初始化
+# 0. 全域設定與常數
 # ==========================================
-st.set_page_config(layout="wide", page_title="排球比賽紀錄系統")
+st.set_page_config(layout="wide", page_title="排球比賽紀錄系統 Pro")
 
-# 初始化 Session State
+# 依照 Excel 圖片定義的統計表顯示順序
+ACTION_ORDER = [
+    "發球繼續", "發球得分", "發球失誤",
+    "攔網繼續", "攔網得分", "攔網失誤",
+    "接發繼續", "接發好球繼續", "接發失誤",
+    "接球繼續", "接球好球繼續", "接球失誤",
+    "舉球繼續", "舉球好球繼續", "舉球失誤",
+    "攻擊繼續", "攻擊得分", "攻擊失誤", "攻擊被攔",
+    "送球繼續", "送球失誤",
+    "防守犯規", "站位失誤" # 其他
+]
+
+# 預設球員名單 (可透過介面修改)
+DEFAULT_PLAYERS = [
+    {"背號": "3", "姓名": "存睿"},
+    {"背號": "12", "姓名": "哲綸"},
+    {"背號": "17", "姓名": "品融"},
+    {"背號": "11", "姓名": "凱威"},
+    {"背號": "7", "姓名": "譽鍇"},
+    {"背號": "13", "姓名": "沈威"},
+    {"背號": "22", "姓名": "恩岳"},
+    {"背號": "18", "姓名": "安絡"}
+]
+
+# ==========================================
+# 1. Session State 初始化
+# ==========================================
 if 'logs' not in st.session_state:
     st.session_state.logs = []
 if 'my_score' not in st.session_state:
@@ -15,164 +42,261 @@ if 'my_score' not in st.session_state:
 if 'enemy_score' not in st.session_state:
     st.session_state.enemy_score = 0
 if 'current_player' not in st.session_state:
-    st.session_state.current_player = None # 用來記錄當前選中的球員
-
-# 預設球員名單 (可依實際情況修改)
-PLAYERS = {
-    "3": "3 存睿", "12": "12 哲綸", "17": "17 品融", 
-    "11": "11 凱威", "7": "7 譽鍇", "13": "13 沈威", 
-    "22": "22 恩岳", "18": "18 安絡"
-}
-
-# 動作分類 (依照你的 Excel 圖片定義)
-ACTIONS = {
-    "繼續 (碰球)": ["發球繼續", "接發繼續", "接球繼續", "舉球繼續", "攻擊繼續", "攔網繼續", "送球繼續"],
-    "得分 (Win)": ["發球得分", "攻擊得分", "攔網得分", "對手失誤"],
-    "失誤 (Loss)": ["發球失誤", "攻擊失誤", "防守失誤", "舉球失誤", "攔網失誤"]
-}
+    st.session_state.current_player = None
+# 比賽資訊設定
+if 'game_info' not in st.session_state:
+    st.session_state.game_info = {
+        "date": datetime.now().date(),
+        "opponent": "對手球隊",
+        "set_num": 1,
+        "players": DEFAULT_PLAYERS
+    }
 
 # ==========================================
-# 2. 核心函數
+# 2. 側邊欄/頂部設定區 (需求 11)
 # ==========================================
-def add_log(player, action, effect):
-    """
-    effect: 'cont' (繼續), 'win' (得分), 'lose' (失分)
-    """
-    # 邏輯判斷：如果沒選球員，提醒使用者
-    if player is None and action != "對手失誤": 
-        st.warning("⚠️ 請先點擊上方按鈕選擇球員！")
+with st.expander("⚙️ 比賽與球員設定 (點擊展開修改)", expanded=False):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.session_state.game_info['date'] = st.date_input("比賽日期", value=st.session_state.game_info['date'])
+    with c2:
+        st.session_state.game_info['opponent'] = st.text_input("對手名稱", value=st.session_state.game_info['opponent'])
+    with c3:
+        st.session_state.game_info['set_num'] = st.number_input("目前局數", min_value=1, value=st.session_state.game_info['set_num'])
+    
+    st.write("球員名單管理 (直接修改表格內容)：")
+    # 讓使用者可以編輯球員名單
+    edited_players = st.data_editor(
+        st.session_state.game_info['players'], 
+        num_rows="dynamic", # 允許新增/刪除球員
+        key="player_editor"
+    )
+    # 更新球員名單
+    st.session_state.game_info['players'] = edited_players
+
+# 取得當前球員清單 (整理成按鈕要用的格式)
+current_player_list = [f"{p['背號']} {p['姓名']}" for p in st.session_state.game_info['players']]
+player_dict = {p['背號']: f"{p['背號']} {p['姓名']}" for p in st.session_state.game_info['players']}
+
+# ==========================================
+# 3. 核心邏輯函數
+# ==========================================
+def add_log(player_num, action, effect):
+    # 1. 檢查是否選取球員 (對手失誤除外)
+    if player_num is None and action != "對手失誤":
+        st.toast("⚠️ 請先選擇球員！", icon="⚠️")
         return
 
-    # 處理比分變動
-    score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}"
+    # 2. 處理比分
+    current_my = st.session_state.my_score
+    current_enemy = st.session_state.enemy_score
+    
+    score_snapshot = "" # 預設為空，只有得分改變才填入 (需求 8)
+    
     if effect == 'win':
         st.session_state.my_score += 1
-        score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}" # 更新分數
+        score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}"
     elif effect == 'lose':
         st.session_state.enemy_score += 1
         score_snapshot = f"{st.session_state.my_score}:{st.session_state.enemy_score}"
-
-    # 寫入紀錄
+    
+    # 3. 新增紀錄
     new_log = {
         "時間": datetime.now().strftime("%H:%M:%S"),
-        "背號": player if player else "對手", # 若是對手失誤可能沒有特定我方球員
+        "背號": player_num if player_num else "對手",
         "動作": action,
         "結果": "得分" if effect == 'win' else "失分" if effect == 'lose' else "繼續",
         "比分": score_snapshot
     }
     st.session_state.logs.append(new_log)
     
-    # 紀錄完後，清空選擇的球員，方便下一次操作 (或保留看習慣)
-    # st.session_state.current_player = None 
+    # 4. 紀錄完後取消選擇球員 (需求 2)
+    st.session_state.current_player = None 
 
 # ==========================================
-# 3. 介面佈局
+# 4. 主畫面佈局
 # ==========================================
-st.title("🏐 專業排球紀錄表")
-
-# 上方比分板
+# 比分板
 col_score1, col_score2, col_reset = st.columns([2, 2, 1])
 with col_score1:
-    st.metric("我方得分 (Home)", st.session_state.my_score)
+    st.metric("我方 (Home)", st.session_state.my_score)
 with col_score2:
-    st.metric("敵方得分 (Guest)", st.session_state.enemy_score)
+    st.metric(f"{st.session_state.game_info['opponent']} (Guest)", st.session_state.enemy_score)
 with col_reset:
-    if st.button("歸零/新局"):
-        st.session_state.logs = []
-        st.session_state.my_score = 0
-        st.session_state.enemy_score = 0
-        st.rerun()
+    # 需求 6: 歸零確認
+    if st.button("🔄 新局/歸零", type="secondary"):
+        with st.popover("確定要清空資料嗎？"):
+            st.write("這將會刪除目前所有紀錄與比分。")
+            if st.button("⚠️ 確認刪除", type="primary"):
+                st.session_state.logs = []
+                st.session_state.my_score = 0
+                st.session_state.enemy_score = 0
+                st.session_state.current_player = None
+                st.rerun()
 
-st.markdown("---")
+st.divider()
 
-# 使用 columns 將畫面切成 [左：操作區] [右：統計表]
-left_panel, right_panel = st.columns([1, 1.2])
+# 切分左右區塊：左邊操作 (70%)，右邊統計 (30%) (需求 5)
+left_panel, right_panel = st.columns([7, 3])
 
-# ----------------- 左側：操作區 -----------------
+# ==========================================
+# 左側：操作區
+# ==========================================
 with left_panel:
-    st.subheader("1. 選擇球員")
-    # 建立球員按鈕網格
-    p_cols = st.columns(4)
-    for idx, (p_num, p_name) in enumerate(PLAYERS.items()):
-        col = p_cols[idx % 4]
-        # 如果是當前選中球員，按鈕變色 (利用 type='primary')
+    # --- 1. 球員選擇區 ---
+    # 依照目前設定的球員產生按鈕
+    cols = st.columns(6) # 一排6個
+    for idx, p_data in enumerate(st.session_state.game_info['players']):
+        p_num = p_data['背號']
+        p_name = p_data['姓名']
+        label = f"{p_num}\n{p_name}"
+        
+        # 判斷是否選中 (需求 1: 紅色亮起)
         is_selected = (st.session_state.current_player == p_num)
-        if col.button(p_name, key=f"p_{p_num}", type="primary" if is_selected else "secondary", use_container_width=True):
-            st.session_state.current_player = p_num
+        
+        with cols[idx % 6]:
+            if st.button(label, key=f"btn_{p_num}", type="primary" if is_selected else "secondary", use_container_width=True):
+                if is_selected:
+                    st.session_state.current_player = None # 再次點擊取消
+                else:
+                    st.session_state.current_player = p_num
+                st.rerun()
+
+    st.markdown("---")
+
+    # --- 2. 動作按鈕區 ---
+    # 定義動作按鈕的排版
+    tab_cont, tab_score, tab_error = st.tabs(["🔁 繼續 (Touch)", "🟢 得分 (Point)", "🔴 失誤 (Error)"])
+
+    def action_btn(label, action_name, effect):
+        if st.button(label, use_container_width=True):
+            add_log(st.session_state.current_player, action_name, effect)
             st.rerun()
 
-    # 顯示目前選中的球員
-    current_p_name = PLAYERS.get(st.session_state.current_player, "尚未選擇")
-    st.info(f"👉 目前操作球員：**{current_p_name}**")
+    with tab_cont:
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: action_btn("發球繼續", "發球繼續", "cont"); action_btn("送球繼續", "送球繼續", "cont")
+        with c2: action_btn("接發球", "接發繼續", "cont"); action_btn("接發到位", "接發好球繼續", "cont")
+        with c3: action_btn("一般接球", "接球繼續", "cont"); action_btn("接球到位", "接球好球繼續", "cont")
+        with c4: action_btn("舉球", "舉球繼續", "cont"); action_btn("舉球到位", "舉球好球繼續", "cont")
+        
+        st.caption("攻擊/攔網")
+        c5, c6, c7, c8 = st.columns(4)
+        with c5: action_btn("攻擊繼續", "攻擊繼續", "cont")
+        with c6: action_btn("攔網繼續", "攔網繼續", "cont")
+        
+    with tab_score:
+        c1, c2, c3 = st.columns(3)
+        with c1: action_btn("攻擊得分 🏐", "攻擊得分", "win")
+        with c2: action_btn("攔網得分 ✋", "攔網得分", "win")
+        with c3: action_btn("發球得分 🎯", "發球得分", "win")
+        st.caption("其他")
+        if st.button("對手失誤 (送分)", use_container_width=True):
+            add_log(None, "對手失誤", "win")
+            st.rerun()
 
-    st.subheader("2. 紀錄動作")
-    
-    # 分頁籤來節省空間，或者直接列出
-    tab1, tab2, tab3 = st.tabs(["🔁 繼續 (Touch)", "🔴 失誤 (Error)", "🟢 得分 (Point)"])
+    with tab_error:
+        c1, c2, c3 = st.columns(3)
+        with c1: action_btn("發球失誤", "發球失誤", "lose"); action_btn("接發失誤", "接發失誤", "lose")
+        with c2: action_btn("攻擊失誤", "攻擊失誤", "lose"); action_btn("攻擊被攔", "攻擊被攔", "lose")
+        with c3: action_btn("舉球/防守失誤", "舉球失誤", "lose"); action_btn("站位/犯規", "防守犯規", "lose")
+        # 補上其他可能的失誤
+        action_btn("攔網失誤", "攔網失誤", "lose")
 
-    with tab1: # 繼續
-        st.caption("好球延續 / 無得分變動")
-        cols = st.columns(3)
-        for i, act in enumerate(ACTIONS["繼續 (碰球)"]):
-            if cols[i % 3].button(act, use_container_width=True):
-                add_log(st.session_state.current_player, act, 'cont')
-                st.rerun()
+    st.markdown("### 📝 紀錄明細 (可直接修改)")
+    # --- 3. 紀錄編輯區 (需求 7, 8, 9) ---
+    if len(st.session_state.logs) > 0:
+        # 將 logs 轉為 DataFrame
+        df_logs = pd.DataFrame(st.session_state.logs)
+        
+        # 使用 data_editor 讓使用者可以編輯、刪除
+        # num_rows="dynamic" 允許增刪行
+        edited_df = st.data_editor(
+            df_logs, 
+            use_container_width=True, 
+            height=300,  # 固定高度，可捲動 (需求 7)
+            num_rows="dynamic",
+            column_config={
+                "比分": st.column_config.TextColumn("比分", disabled=False)
+            },
+            key="log_editor" 
+        )
+        
+        # 關鍵：將編輯後的資料寫回 session_state，讓統計表連動更新 (需求 9)
+        # 注意：雖然這裡直接覆蓋，但比分欄位的邏輯不會自動重算（這很複雜），
+        # 但統計數據會根據「動作」和「背號」重新計算。
+        st.session_state.logs = edited_df.to_dict('records')
+    else:
+        st.info("尚無紀錄")
 
-    with tab2: # 失誤
-        st.caption("我方失分 / 對方得分")
-        cols = st.columns(3)
-        for i, act in enumerate(ACTIONS["失誤 (Loss)"]):
-            if cols[i % 3].button(act, use_container_width=True):
-                add_log(st.session_state.current_player, act, 'lose')
-                st.rerun()
-
-    with tab3: # 得分
-        st.caption("我方得分")
-        cols = st.columns(3)
-        for i, act in enumerate(ACTIONS["得分 (Win)"]):
-            if cols[i % 3].button(act, use_container_width=True):
-                # 特殊處理：對手失誤不需要選我方球員
-                p = st.session_state.current_player
-                if act == "對手失誤":
-                    p = None 
-                add_log(p, act, 'win')
-                st.rerun()
-
-# ----------------- 右側：統計區 -----------------
+# ==========================================
+# 右側：統計區 (需求 3, 4, 5)
+# ==========================================
 with right_panel:
-    st.subheader("📊 即時統計 (Excel樣式)")
+    st.subheader("📊 即時統計")
     
     if len(st.session_state.logs) > 0:
-        # 1. 轉換成 DataFrame
         df = pd.DataFrame(st.session_state.logs)
         
-        # 2. 製作樞紐分析表 (Pivot Table) 模仿你的 Excel 格式
-        # index=動作, columns=背號, values=計數
-        pivot_df = df.pivot_table(
+        # 1. 建立樞紐分析表
+        # index=動作, columns=背號
+        pivot = df.pivot_table(
             index="動作", 
             columns="背號", 
-            values="結果", 
+            values="時間", 
             aggfunc='count', 
             fill_value=0
         )
         
-        # 為了讓表格好看，我們可以確保所有球員都在列中 (即使沒數據)
-        for p_num in PLAYERS.keys():
-            if p_num not in pivot_df.columns:
-                pivot_df[p_num] = 0
-        # 排序欄位
-        pivot_df = pivot_df.reindex(columns=sorted(pivot_df.columns), fill_value=0)
-
-        # 3. 顯示表格
-        st.dataframe(pivot_df, use_container_width=True, height=600)
+        # 2. 確保所有「目前設定的球員」都在欄位中 (依照背號順序)
+        current_player_nums = [p['背號'] for p in st.session_state.game_info['players']]
+        for p in current_player_nums:
+            if p not in pivot.columns:
+                pivot[p] = 0
         
-        # 4. 下載功能
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 下載流水帳 CSV", csv, "volleyball_log.csv", "text/csv")
+        # 欄位排序 (依照設定的順序)
+        existing_cols = [c for c in current_player_nums if c in pivot.columns]
+        pivot = pivot[existing_cols] # 只保留我們名單內的，並照順序
+        
+        # 3. 確保所有「定義好的動作」都在列中 (依照 Excel 圖片順序)
+        pivot = pivot.reindex(ACTION_ORDER, fill_value=0)
+        
+        # 4. 移除完全沒有數據且不在 ACTION_ORDER 裡的雜項 (Optional)
+        # 但為了符合你的固定順序需求，我們主要依賴 reindex
+        
+        # 5. 計算「個人得分總和」與「個人失分總和」 (需求 4)
+        # 定義哪些動作算得分，哪些算失分
+        score_actions = ["發球得分", "攻擊得分", "攔網得分"] # 根據你的邏輯增減
+        error_actions = ["發球失誤", "接發失誤", "接球失誤", "舉球失誤", "攻擊失誤", "攻擊被攔", "攔網失誤", "送球失誤", "防守犯規", "站位失誤"]
+        
+        # 計算總和
+        total_score_row = pivot.loc[pivot.index.intersection(score_actions)].sum()
+        total_error_row = pivot.loc[pivot.index.intersection(error_actions)].sum()
+        
+        # 將總和加回 DataFrame 底部
+        pivot.loc['個人得分總和'] = total_score_row
+        pivot.loc['個人失分總和'] = total_error_row
+        
+        # 6. 顯示表格
+        st.dataframe(pivot, use_container_width=True, height=700)
+        
+        # ==========================================
+        # Excel 下載區 (需求 10)
+        # ==========================================
+        # 產生 Excel 檔案 (包含兩個 Sheet)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            # Sheet 1: 統計表
+            pivot.to_excel(writer, sheet_name='統計數據')
+            # Sheet 2: 流水帳
+            df.to_excel(writer, sheet_name='詳細流水帳', index=False)
+            
+        st.download_button(
+            label="📥 下載 Excel (.xlsx)",
+            data=output.getvalue(),
+            file_name=f"volleyball_stats_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
     else:
-        st.write("尚未有紀錄，請開始比賽！")
-
-    # 顯示最近 5 筆流水帳，方便確認
-    st.subheader("📝 最近紀錄")
-    if st.session_state.logs:
-        st.table(pd.DataFrame(st.session_state.logs[-5:]))
+        st.caption("等待紀錄中...")
