@@ -15,6 +15,7 @@ st.markdown("""
         min-height: 55px;
         font-size: 18px;
         font-weight: bold;
+        border-radius: 8px;
     }
     /* 選中球員的樣式 (黃色) */
     div.stButton > button:active {
@@ -74,7 +75,7 @@ ROSTER_DB = [
     {"背號": "9", "姓名": "替補I", "位置": "MB"},
 ]
 
-# 統計表順序 (列)
+# 統計表順序 (Rows) - 嚴格依照附圖
 ORDERED_ROWS = [
     "發球繼續", "攔網繼續", "接發繼續", "接發好球繼續", 
     "接球繼續", "接球好球繼續", "舉球繼續", "舉球好球繼續", 
@@ -88,8 +89,7 @@ ORDERED_ROWS = [
     "攔網失誤", "攔網犯規"
 ]
 
-# 動作屬性定義 (用於自動重算比分)
-# Value: 1 (我方得分), -1 (對手得分), 0 (繼續)
+# 動作分數影響 (Value: 1=我方得分, -1=對手得分, 0=繼續)
 ACTION_EFFECTS = {
     # 繼續
     "發球": 0, "攔網": 0, "接發A": 0, "接發B": 0, "接球A": 0, "接球B": 0, 
@@ -106,7 +106,7 @@ ACTION_EFFECTS = {
     "攔網觸網": -1, "攔網出界": -1, "攔網失誤": -1, "攔網犯規": -1
 }
 
-# 顯示名稱映射 (Button -> Stats Name)
+# 顯示名稱映射 (Button Name -> Stats Name)
 ACTION_MAP = {
     "發球": "發球繼續", "攔網": "攔網繼續", "接發A": "接發好球繼續", "接發B": "接發繼續",
     "接球A": "接球好球繼續", "接球B": "接球繼續", "舉球": "舉球繼續", "舉球好球": "舉球好球繼續",
@@ -130,8 +130,9 @@ if 'my_score' not in st.session_state: st.session_state.my_score = 0
 if 'enemy_score' not in st.session_state: st.session_state.enemy_score = 0
 if 'current_player' not in st.session_state: st.session_state.current_player = None 
 if 'confirm_reset' not in st.session_state: st.session_state.confirm_reset = False
-# [修正] 使用 radio_key 來控制分頁強制跳轉
-if 'radio_key' not in st.session_state: st.session_state.radio_key = "cont_tab"
+
+# [關鍵修正] 使用 reset_id 來控制 Radio 的強制重置
+if 'radio_reset_id' not in st.session_state: st.session_state.radio_reset_id = 0
 
 if 'game_meta' not in st.session_state:
     st.session_state.game_meta = {"match_name": "校內聯賽", "date": datetime.now().date(), "opponent": "對手", "set": 1}
@@ -144,34 +145,22 @@ if 'active_lineup' not in st.session_state:
 # ==========================================
 
 def recalculate_scores():
-    """ 
-    [需求 2] 核心函數：從頭到尾重算比分 
-    當使用者編輯紀錄後，必須呼叫此函數修正比分與結果 
-    """
+    """ 從頭重算比分 (當編輯紀錄後觸發) """
     temp_my = 0
     temp_opp = 0
     
-    # logs 是 insert(0) 也就是倒序的 (最新在最前)，重算要從舊到新
-    # 所以先 reverse 
+    # 轉正序計算
     chronological_logs = st.session_state.logs[::-1]
     
     for log in chronological_logs:
-        raw_action = log.get("原始動作", log["動作"]) # 嘗試取得原始按鈕名稱，若無則用動作名
+        raw_action = log.get("原始動作", log["動作"])
         
-        # 查找效果
-        # 注意：因為編輯器可能已經把動作改成「統計顯示名稱」(如:直接得分)，
-        # 所以這裡要做一點反向查找或模糊匹配，或者簡化邏輯：
-        # 我們假設編輯選單用的是 ACTION_MAP 的 keys (按鈕名)
-        
+        # 判斷效果
         effect = ACTION_EFFECTS.get(raw_action, 0)
-        
-        # 如果是「對手失誤」類，effect 預設為 1
-        if "對手" in raw_action and "得分" not in raw_action: 
-             # 這裡簡單判斷：如果是對手失誤系列，都是我方得分
-             if raw_action in ACTION_EFFECTS:
-                 effect = ACTION_EFFECTS[raw_action]
+        # 修正：對手失誤系列都是我方得分
+        if "對手" in raw_action and raw_action in ACTION_EFFECTS:
+             effect = 1
 
-        # 更新該筆紀錄的比分
         res_str = "繼續"
         score_str = ""
         
@@ -185,16 +174,15 @@ def recalculate_scores():
             score_str = f"{temp_my}:{temp_opp}"
             
         log["結果"] = res_str
-        log["比分"] = score_str
-        # log["動作"] 會由編輯器直接修改，不需要動
+        log["比分"] = score_str # 若為繼續球，這裡是空字串
 
-    # 更新回 session state (轉回倒序)
+    # 更新回 Session State
     st.session_state.logs = chronological_logs[::-1]
     st.session_state.my_score = temp_my
     st.session_state.enemy_score = temp_opp
 
 def log_event(action_key):
-    """ 紀錄動作 """
+    """ 紀錄動作並更新分數 """
     player = st.session_state.current_player
     is_opponent_action = "對手" in action_key
     
@@ -212,10 +200,9 @@ def log_event(action_key):
 
     if is_opponent_action: st.session_state.current_player = None
 
-    # 先存原始動作名稱 (為了重算方便)
     raw_action_name = action_key
 
-    # 計算當下分數 (先做一次，雖然 heavy calc 會重做，但為了即時反應)
+    # 預先計算分數 (雖然會重算，但為了 UI 即時性)
     effect = ACTION_EFFECTS.get(action_key, 0)
     score_display = ""
     result_str = "繼續"
@@ -233,15 +220,15 @@ def log_event(action_key):
         "時間": datetime.now().strftime("%H:%M:%S"),
         "球員": final_player, 
         "動作": stats_name,
-        "原始動作": raw_action_name, # 隱藏欄位，用於邏輯計算
+        "原始動作": raw_action_name,
         "結果": result_str,
         "比分": score_display,
     }
     st.session_state.logs.insert(0, new_record)
     
-    # [需求 3] 取消選取 + 強制回到第一分頁
+    # [修正] 動作後取消選取 & 強制重置 Radio (透過更改 ID)
     st.session_state.current_player = None
-    st.session_state.radio_key = "cont_tab" # 強制設定 radio 的 value
+    st.session_state.radio_reset_id += 1 
 
 # ==========================================
 # 4. 介面佈局
@@ -321,21 +308,16 @@ with left_panel:
     # 2. 動作區
     st.subheader("2. 紀錄動作")
     
-    # [修正] 改用 Radio 當作 Tab，方便程式控制
-    # 選項對應 key 值: "cont_tab", "score_tab", "err_tab"
+    # [關鍵修正] 使用 dynamic key 強制重置 Radio Button 回到 index 0
     action_mode = st.radio(
         "動作類別", 
         ["🔵 繼續", "🟢 得分", "🔴 失誤"], 
         horizontal=True,
-        key="action_radio_ui",
-        # 這裡很關鍵：我們根據 session_state.radio_key 來決定預設選誰
-        # 但 Streamlit 的 key 綁定有點 tricky，我們用 index 對應
-        index=0 if st.session_state.radio_key == "cont_tab" else (1 if st.session_state.radio_key == "score_tab" else 2)
+        key=f"action_radio_{st.session_state.radio_reset_id}", # 每次 ID 改變，元件就會重建並回到預設值
+        index=0
     )
     
-    # 根據 radio 的選擇顯示對應內容
     if "繼續" in action_mode:
-        st.session_state.radio_key = "cont_tab" # 同步狀態
         r1 = st.columns(6)
         r1[0].button("發球", on_click=log_event, args=("發球",), use_container_width=True)
         r1[1].button("攔網", on_click=log_event, args=("攔網",), use_container_width=True)
@@ -349,7 +331,6 @@ with left_panel:
         r1[5].button("處理球", on_click=log_event, args=("處理球",), use_container_width=True)
     
     elif "得分" in action_mode:
-        st.session_state.radio_key = "score_tab"
         s_col1, s_col2, s_col3, s_col4 = st.columns([1, 2, 1, 2])
         with s_col1:
             st.caption("發球")
@@ -371,7 +352,6 @@ with left_panel:
             for o in opps: st.button(o, on_click=log_event, args=(o,), use_container_width=True)
     
     elif "失誤" in action_mode:
-        st.session_state.radio_key = "err_tab"
         e_col1, e_col2, e_col3, e_col4, e_col5 = st.columns(5)
         with e_col1:
             st.caption("發球")
@@ -393,84 +373,73 @@ with right_panel:
     st.subheader("📝 紀錄明細")
     if st.session_state.logs:
         df_logs = pd.DataFrame(st.session_state.logs)
-        # 用於編輯的動作選項：使用 ACTION_MAP 的 keys (原始按鈕名) 方便回推
         edit_actions = list(ACTION_EFFECTS.keys())
         
-        # 顯示時我們把「原始動作」映射為「統計名稱」可能比較好，
-        # 但為了編輯方便，我們這裡允許編輯器顯示原始動作
-        
+        # [關鍵修正] 修復 TypeError: label 參數重複定義的問題
         edited_df = st.data_editor(
             df_logs,
             column_config={
                 "球員": st.column_config.SelectboxColumn("球員", options=[f"{p['背號']} - {p['姓名']} ({p['位置']})" for p in ROSTER_DB] + ["對手"], required=True),
-                "原始動作": st.column_config.SelectboxColumn("動作修正", options=edit_actions, required=True, label="動作"),
-                "動作": None, # 隱藏統計用名稱
+                # 這裡修正了：label 參數不使用關鍵字傳遞，直接作為第一個參數 "動作修正"
+                "原始動作": st.column_config.SelectboxColumn("動作修正", options=edit_actions, required=True), 
+                "動作": None, 
                 "結果": st.column_config.TextColumn("結果", disabled=True),
                 "比分": st.column_config.TextColumn("比分", disabled=True),
             },
             hide_index=True,
             use_container_width=True,
             height=250,
-            key="log_editor"
+            key="log_editor",
+            # [新增] on_change 回調，當表格變動時自動觸發重算
+            on_change=recalculate_scores
         )
-        
-        # [需求 2] 檢測到編輯後，自動重算比分
-        # 簡單判定：如果長度一樣，但內容變了 (這裡直接每次重算最保險，因為 session state 更新機制)
-        # 為了效能，我們檢查 edited_df 和 logs 是否一致
-        # 但 data_editor 返回的是 DataFrame， logs 是 list of dicts
-        
-        current_dicts = edited_df.to_dict('records')
-        if current_dicts != st.session_state.logs:
-            st.session_state.logs = current_dicts
-            recalculate_scores() # 觸發重算
-            st.rerun() # 刷新介面顯示新比分
     else:
         st.info("尚無紀錄")
 
-    # --- 統計表 (需求 3: 鋪色 + 固定排序) ---
+    # --- 統計表 ---
     st.subheader("📊 統計")
     if st.session_state.logs:
         df = pd.DataFrame(st.session_state.logs)
         
-        # 1. 取得所有場上球員的背號 (按順序)
+        # 1. 取得所有場上球員背號 (依照 active_lineup 順序)
         active_numbers = []
         for p_str in st.session_state.active_lineup:
             try:
-                # p_str: "1 - 名字 (位置)" -> 取 "1"
                 active_numbers.append(p_str.split(" - ")[0])
-            except:
-                pass
+            except: pass
         
-        # 2. 處理資料：簡化球員名字為背號
+        # 2. 處理資料
         def get_short_name(p_str):
             if "對手" in p_str: return "對手"
             return p_str.split(" - ")[0]
         
         df['ShortName'] = df['球員'].apply(get_short_name)
-        
-        # 3. Pivot
         stats = df.pivot_table(index='動作', columns='ShortName', aggfunc='size', fill_value=0)
         
-        # 4. [需求 3] 強制包含所有場上球員 (Columns)
-        # 即使某人沒數據，也要顯示該欄
+        # 3. 強制包含所有場上球員 (Columns)
         for num in active_numbers:
             if num not in stats.columns:
                 stats[num] = 0
         
-        # 排序 Columns: 依照 active_numbers 順序 + 對手
+        # 4. [修正] 欄位排序：球員 1~7 -> Total -> 對手 (完全依照附圖)
         final_cols = [n for n in active_numbers if n in stats.columns]
-        if "對手" in stats.columns: final_cols.append("對手")
-        stats = stats[final_cols]
+        
+        # 先計算 Total (不含對手)
+        stats["Total"] = stats[final_cols].sum(axis=1)
+        final_cols.append("Total")
+
+        # 最後加入對手 (若有)
+        if "對手" in stats.columns:
+            final_cols.append("對手")
+        
+        # 重新排列
+        stats = stats.reindex(columns=final_cols, fill_value=0)
         
         # 5. 強制包含所有 Row (ORDERED_ROWS)
         stats = stats.reindex(ORDERED_ROWS, fill_value=0)
         
-        # 計算 Total
-        stats["Total"] = stats.sum(axis=1)
-
-        # 6. [需求 3] 鋪色 (Pandas Styler)
+        # 鋪色
         def color_rows(row):
-            # 根據 Index 名稱決定顏色
             idx = row.name
             color = ''
             if "繼續" in idx:
@@ -483,7 +452,7 @@ with right_panel:
 
         st.dataframe(stats.style.apply(color_rows, axis=1), use_container_width=True, height=600)
         
-        # Excel 匯出 (同前，略微整理)
+        # Excel 匯出
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             sheet_name = f"G{st.session_state.game_meta['set']}_Stats"
@@ -491,7 +460,6 @@ with right_panel:
             wb = writer.book
             ws = writer.sheets[sheet_name]
             
-            # 格式
             fmt_y = wb.add_format({'bg_color': '#FFF2CC', 'border': 1})
             fmt_g = wb.add_format({'bg_color': '#D9EAD3', 'border': 1})
             fmt_r = wb.add_format({'bg_color': '#F4CCCC', 'border': 1})
