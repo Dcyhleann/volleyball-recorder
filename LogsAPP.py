@@ -10,50 +10,73 @@ st.set_page_config(layout="wide", page_title="排球比賽紀錄系統 Pro", ini
 
 st.markdown("""
     <style>
-    /* 加大按鈕 */
+    /* 全局字體優化 */
+    .big-score {
+        font-size: 40px;
+        font-weight: 900;
+        text-align: center;
+        line-height: 1.2;
+    }
+    .score-sep {
+        color: #888;
+        font-size: 30px;
+        vertical-align: middle;
+    }
+    
+    /* 按鈕樣式 */
     div.stButton > button {
-        min-height: 55px;
-        font-size: 18px;
+        min-height: 60px; /* 增加高度讓觸控更好按 */
+        font-size: 16px;
         font-weight: bold;
         border-radius: 8px;
+        border: 1px solid #ccc;
     }
+    
     /* 選中球員的樣式 (黃色) */
     div.stButton > button:active {
         background-color: #FFD700 !important;
         color: black !important;
         border: 2px solid black;
     }
+    
     /* 位置標籤 */
     .pos-label {
         text-align: center;
-        font-size: 14px;
-        color: #555;
-        font-weight: bold;
+        font-size: 12px;
+        color: #666;
         margin-bottom: -5px;
     }
-    /* Radio 按鈕樣式優化 */
+    
+    /* Radio 按鈕優化 (橫向選單) */
     div[role="radiogroup"] {
         flex-direction: row;
         width: 100%;
-        justify-content: space-between;
+        justify-content: center;
     }
     div[data-testid="stRadio"] > label {
         display: none;
     }
     div[role="radiogroup"] label {
-        background-color: #f0f2f6;
-        padding: 10px 20px;
-        border-radius: 5px;
-        border: 1px solid #ddd;
+        background-color: #f8f9fa;
+        padding: 12px 0;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
         flex-grow: 1;
         text-align: center;
-        margin: 0 5px;
+        margin: 0 4px;
+        font-size: 18px;
     }
     div[role="radiogroup"] label[data-checked="true"] {
-        background-color: #e6f3ff;
-        border-color: #007bff;
-        color: #007bff;
+        background-color: #e6f3ff; /* 選中時的淺藍底 */
+        border-color: #0d6efd;
+        color: #0d6efd;
         font-weight: bold;
+        box-shadow: 0 0 5px rgba(13, 110, 253, 0.3);
+    }
+    
+    /* 欄位標題置中 */
+    div[data-testid="column"] > div {
+        text-align: center;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -74,12 +97,16 @@ ROSTER_DB = [
     {"背號": "9", "姓名": "替補I", "位置": "MB"},
 ]
 
+# 統計表順序
 ORDERED_ROWS = [
+    # 繼續
     "發球繼續", "攔網繼續", "接發繼續", "接發好球繼續", 
     "接球繼續", "接球好球繼續", "舉球繼續", "舉球好球繼續", 
     "攻擊擊球繼續", "送球繼續",
+    # 得分
     "發球得分", "直接得分", "對手接噴", "打手得分", "吊球得分", "送球得分", "攔網得分", 
     "對手失誤(總計)", 
+    # 失誤
     "發球出界", "發球掛網", "發球犯規", 
     "攻擊出界", "攻擊掛網", "攻擊被攔", "送球失誤", "攻擊犯規", 
     "舉球失誤", "舉球犯規", 
@@ -87,6 +114,12 @@ ORDERED_ROWS = [
     "攔網失誤", "攔網犯規"
 ]
 
+# 用於計算總分的清單
+SCORE_ROWS_LIST = ["發球得分", "直接得分", "對手接噴", "打手得分", "吊球得分", "送球得分", "攔網得分"]
+ERROR_ROWS_LIST = ["發球出界", "發球掛網", "發球犯規", "攻擊出界", "攻擊掛網", "攻擊被攔", "送球失誤", "攻擊犯規", 
+                   "舉球失誤", "舉球犯規", "接發失誤", "站位失誤", "接球失誤", "防守犯規", "攔網失誤", "攔網犯規"]
+
+# 動作分數影響
 ACTION_EFFECTS = {
     "發球": 0, "攔網": 0, "接發A": 0, "接發B": 0, "接球A": 0, "接球B": 0, 
     "舉球": 0, "舉球好球": 0, "攻擊": 0, "處理球": 0,
@@ -100,6 +133,7 @@ ACTION_EFFECTS = {
     "攔網觸網": -1, "攔網出界": -1, "攔網失誤": -1, "攔網犯規": -1
 }
 
+# 顯示名稱映射
 ACTION_MAP = {
     "發球": "發球繼續", "攔網": "攔網繼續", "接發A": "接發好球繼續", "接發B": "接發繼續",
     "接球A": "接球好球繼續", "接球B": "接球繼續", "舉球": "舉球繼續", "舉球好球": "舉球好球繼續",
@@ -128,12 +162,9 @@ if 'radio_reset_id' not in st.session_state: st.session_state.radio_reset_id = 0
 if 'game_meta' not in st.session_state:
     st.session_state.game_meta = {"match_name": "校內聯賽", "date": datetime.now().date(), "opponent": "對手", "set": 1}
 
-# 初始化先發陣容
 if 'active_lineup' not in st.session_state:
     st.session_state.active_lineup = [f"{p['背號']} - {p['姓名']} ({p['位置']})" for p in ROSTER_DB[:7]]
 
-# [需求 3] 追蹤所有上場過的球員 (用於統計表排序)
-# 初始化時放入先發 7 人
 if 'seen_players' not in st.session_state:
     initial_players = []
     for p_str in st.session_state.active_lineup:
@@ -148,7 +179,6 @@ if 'seen_players' not in st.session_state:
 # ==========================================
 
 def update_seen_players(player_str):
-    """ 更新上場球員列表，確保新替補排在後面 """
     if "對手" in player_str: return
     try:
         short = player_str.split(" - ")[0]
@@ -157,30 +187,16 @@ def update_seen_players(player_str):
     except: pass
 
 def recalculate_scores():
-    """ 
-    [需求 1] 從頭重算比分 
-    讀取 st.session_state.logs (這是 data_editor 更新後的最新狀態)
-    重新計算每一球的比分與結果
-    """
     temp_my = 0
     temp_opp = 0
-    
-    # logs 目前是 [最新 ... 最舊] (倒序)
-    # 我們需要轉成 [最舊 ... 最新] (正序) 來計算比分疊加
     chronological_logs = st.session_state.logs[::-1]
     
     for log in chronological_logs:
-        # 使用「原始動作」來判斷得分效果
         raw_action = log.get("原始動作", log.get("動作", ""))
-        
-        # 更新上場名單 (防止編輯時選了新球員但沒被加入統計欄位)
         update_seen_players(log["球員"])
         
-        # 判斷分數效果
         effect = ACTION_EFFECTS.get(raw_action, 0)
-        # 對手失誤類特判
-        if "對手" in raw_action and raw_action in ACTION_EFFECTS:
-             effect = 1
+        if "對手" in raw_action and raw_action in ACTION_EFFECTS: effect = 1
 
         res_str = "繼續"
         score_str = ""
@@ -194,26 +210,20 @@ def recalculate_scores():
             res_str = "失誤"
             score_str = f"{temp_my}:{temp_opp}"
             
-        # 寫回 Log
         log["結果"] = res_str
         log["比分"] = score_str
         
-        # 更新統計顯示名稱 (Action Map)
-        # 如果 raw_action 有在 map 裡，就更新顯示名稱，確保統計表歸類正確
-        # 注意：如果是對手失誤，統一歸類為 "對手失誤(總計)"
         stats_name = ACTION_MAP.get(raw_action, raw_action)
         if "對手" in raw_action and raw_action not in ["對手接噴"]:
             stats_name = "對手失誤(總計)"
         
         log["動作"] = stats_name
 
-    # 更新 Session State (轉回倒序)
     st.session_state.logs = chronological_logs[::-1]
     st.session_state.my_score = temp_my
     st.session_state.enemy_score = temp_opp
 
 def log_event(action_key):
-    """ 紀錄動作 """
     player = st.session_state.current_player
     is_opponent_action = "對手" in action_key
     
@@ -221,10 +231,8 @@ def log_event(action_key):
         st.toast("⚠️ 請先選擇一位球員！", icon="⚠️")
         return 
 
-    # [需求 3] 更新上場名單
     if player: update_seen_players(player)
 
-    # 顯示名稱處理
     stats_name = ACTION_MAP.get(action_key, action_key)
     if is_opponent_action and action_key not in ["對手接噴"]: 
         stats_name = "對手失誤(總計)"
@@ -234,23 +242,17 @@ def log_event(action_key):
 
     if is_opponent_action: st.session_state.current_player = None
 
-    # 新增紀錄 (Result 跟 Score 暫時填空，馬上會呼叫 recalculate 補上)
     new_record = {
         "時間": datetime.now().strftime("%H:%M:%S"),
         "球員": final_player, 
         "動作": stats_name,
-        "原始動作": action_key, # 保留原始按鈕名稱以供重算
+        "原始動作": action_key,
         "結果": "",
         "比分": "",
     }
     
-    # 插入第一筆
     st.session_state.logs.insert(0, new_record)
-    
-    # 立即重算 (確保資料一致性)
     recalculate_scores()
-    
-    # 介面重置
     st.session_state.current_player = None
     st.session_state.radio_reset_id += 1 
 
@@ -258,45 +260,52 @@ def log_event(action_key):
 # 4. 介面佈局
 # ==========================================
 
-col_info1, col_info2 = st.columns([3, 1])
-with col_info1:
-    meta = st.session_state.game_meta
-    st.markdown(f"### 🏆 {meta['match_name']} | 📅 {meta['date']} | 🆚 {meta['opponent']} (G{meta['set']})")
+# --- [修正 1] Top Layout (整合比分與資訊) ---
+# 比例: 資訊(3) - 比分(2) - 按鈕(1)
+c_meta, c_score, c_btn = st.columns([3, 2, 1], gap="small")
 
-with col_info2:
-    if st.button("🔄 新局/歸零", type="secondary", use_container_width=True):
+with c_meta:
+    meta = st.session_state.game_meta
+    st.markdown(f"**{meta['match_name']}** | {meta['date']}")
+    st.markdown(f"🆚 **{meta['opponent']}** (Set {meta['set']})")
+
+with c_score:
+    # 緊湊比分顯示
+    st.markdown(
+        f"<div class='big-score'>"
+        f"<span style='color:#0d6efd'>{st.session_state.my_score}</span>"
+        f"<span class='score-sep'> : </span>"
+        f"<span style='color:#dc3545'>{st.session_state.enemy_score}</span>"
+        f"</div>", 
+        unsafe_allow_html=True
+    )
+
+with c_btn:
+    if st.button("🔄 重置", type="secondary", use_container_width=True):
         st.session_state.confirm_reset = True
 
+# 確認重置視窗
 if st.session_state.confirm_reset:
     with st.chat_message("assistant"):
-        st.warning("確定清空？")
-        c1, c2 = st.columns(2)
-        if c1.button("✅ 確定"):
+        st.warning("⚠️ 確定清空資料？")
+        cols = st.columns(2)
+        if cols[0].button("✅ 是"):
             st.session_state.logs = []
             st.session_state.my_score = 0
             st.session_state.enemy_score = 0
             st.session_state.current_player = None
-            # 重置見過球員
             st.session_state.seen_players = []
             for p_str in st.session_state.active_lineup:
                 try: st.session_state.seen_players.append(p_str.split(" - ")[0])
                 except: pass
-            
             st.session_state.confirm_reset = False
             st.rerun()
-        if c2.button("❌ 取消"):
+        if cols[1].button("❌ 否"):
             st.session_state.confirm_reset = False
             st.rerun()
 
-st.markdown(f"""
-<div style="text-align: center; background-color: #f0f2f6; padding: 5px; border-radius: 10px; margin-bottom: 10px;">
-    <h1 style="margin:0; font-size: 3.5em;">
-        <span style="color: blue">{st.session_state.my_score}</span> : <span style="color: red">{st.session_state.enemy_score}</span>
-    </h1>
-</div>
-""", unsafe_allow_html=True)
-
-with st.expander("⚙️ 設定：比賽與陣容"):
+# --- 設定區 (摺疊) ---
+with st.expander("⚙️ 比賽資訊 / 換人設定"):
     c0, c1, c2, c3 = st.columns(4)
     st.session_state.game_meta['match_name'] = c0.text_input("比賽", value=st.session_state.game_meta['match_name'])
     st.session_state.game_meta['date'] = c1.date_input("日期", value=st.session_state.game_meta['date'])
@@ -309,108 +318,121 @@ with st.expander("⚙️ 設定：比賽與陣容"):
     for i in range(7):
         with cols_lineup[i]:
             def_idx = roster_options.index(st.session_state.active_lineup[i]) if st.session_state.active_lineup[i] in roster_options else 0
-            new_val = st.selectbox(f"位置 {i+1}", roster_options, index=def_idx, key=f"pos_{i}")
-            
-            # 如果換人，更新 active_lineup 並加入 seen_players
+            new_val = st.selectbox(f"Pos {i+1}", roster_options, index=def_idx, key=f"pos_{i}", label_visibility="collapsed")
             if new_val != st.session_state.active_lineup[i]:
                 st.session_state.active_lineup[i] = new_val
                 update_seen_players(new_val)
 
-left_panel, right_panel = st.columns([2, 1])
+# --- 主操作區 ---
+# 1. 球員選擇
+p_cols = st.columns(7)
+for idx, player_str in enumerate(st.session_state.active_lineup):
+    try:
+        parts = player_str.split(" - ")
+        num = parts[0]
+        name = parts[1].split(" (")[0]
+        pos = parts[1].split(" (")[1].replace(")", "")
+    except:
+        num, name, pos = "?", "?", "?"
 
-with left_panel:
-    # 1. 球員區
-    st.subheader("1. 選擇球員")
-    p_cols = st.columns(7)
-    for idx, player_str in enumerate(st.session_state.active_lineup):
-        try:
-            parts = player_str.split(" - ")
-            num = parts[0]
-            name = parts[1].split(" (")[0]
-            pos = parts[1].split(" (")[1].replace(")", "")
-        except:
-            num, name, pos = "?", "?", "?"
+    is_selected = (st.session_state.current_player == player_str)
+    with p_cols[idx]:
+        st.markdown(f"<div class='pos-label'>{pos}</div>", unsafe_allow_html=True)
+        if st.button(f"{num}\n{name}", key=f"btn_p_{idx}", type="primary" if is_selected else "secondary", use_container_width=True):
+            st.session_state.current_player = None if is_selected else player_str
+            st.rerun()
 
-        is_selected = (st.session_state.current_player == player_str)
-        with p_cols[idx]:
-            st.markdown(f"<div class='pos-label'>{pos}</div>", unsafe_allow_html=True)
-            if st.button(f"{num}\n{name}", key=f"btn_p_{idx}", type="primary" if is_selected else "secondary", use_container_width=True):
-                st.session_state.current_player = None if is_selected else player_str
-                st.rerun()
+st.write("") # Spacer
 
-    st.divider()
+# 2. 動作紀錄區
+action_mode = st.radio(
+    "Mode", ["🔵 繼續", "🟢 得分", "🔴 失誤"], 
+    horizontal=True, 
+    key=f"radio_{st.session_state.radio_reset_id}",
+    label_visibility="collapsed"
+)
 
-    # 2. 動作區
-    st.subheader("2. 紀錄動作")
-    
-    action_mode = st.radio(
-        "動作類別", 
-        ["🔵 繼續", "🟢 得分", "🔴 失誤"], 
-        horizontal=True,
-        key=f"action_radio_{st.session_state.radio_reset_id}",
-        index=0
-    )
-    
-    if "繼續" in action_mode:
-        r1 = st.columns(6)
-        r1[0].button("發球", on_click=log_event, args=("發球",), use_container_width=True)
-        r1[1].button("攔網", on_click=log_event, args=("攔網",), use_container_width=True)
-        r1[2].button("接發A", on_click=log_event, args=("接發A",), use_container_width=True)
-        r1[2].button("接發B", on_click=log_event, args=("接發B",), use_container_width=True)
-        r1[3].button("接球A", on_click=log_event, args=("接球A",), use_container_width=True)
-        r1[3].button("接球B", on_click=log_event, args=("接球B",), use_container_width=True)
-        r1[4].button("舉球", on_click=log_event, args=("舉球",), use_container_width=True)
-        r1[4].button("舉球好球", on_click=log_event, args=("舉球好球",), use_container_width=True)
-        r1[5].button("攻擊", on_click=log_event, args=("攻擊",), use_container_width=True)
-        r1[5].button("處理球", on_click=log_event, args=("處理球",), use_container_width=True)
-    
-    elif "得分" in action_mode:
-        s_col1, s_col2, s_col3, s_col4 = st.columns([1, 2, 1, 2])
-        with s_col1:
-            st.caption("發球")
-            st.button("發球得分", on_click=log_event, args=("發球得分",), use_container_width=True)
-        with s_col2:
-            st.caption("攻擊")
-            st.button("攻擊得分", on_click=log_event, args=("攻擊得分",), use_container_width=True)
-            c1, c2 = st.columns(2)
-            c1.button("吊球得分", on_click=log_event, args=("吊球得分",), use_container_width=True)
-            c2.button("打手得分", on_click=log_event, args=("打手得分",), use_container_width=True)
-            c1.button("送球得分", on_click=log_event, args=("送球得分",), use_container_width=True)
-            c2.button("後排得分", on_click=log_event, args=("後排得分",), use_container_width=True)
-        with s_col3:
-            st.caption("攔網")
-            st.button("攔網得分", on_click=log_event, args=("攔網得分",), use_container_width=True)
-        with s_col4:
-            st.caption("對手失誤")
-            opps = ["對手發球出界", "對手發球掛網", "對手攻擊出界", "對手攻擊掛網", "對手送球失誤", "對手舉球失誤", "對手攔網犯規"]
-            for o in opps: st.button(o, on_click=log_event, args=(o,), use_container_width=True)
-    
-    elif "失誤" in action_mode:
-        e_col1, e_col2, e_col3, e_col4, e_col5 = st.columns(5)
-        with e_col1:
-            st.caption("發球")
-            for a in ["發球出界", "發球掛網", "發球犯規"]: st.button(a, on_click=log_event, args=(a,), use_container_width=True)
-        with e_col2:
-            st.caption("攻擊")
-            for a in ["攻擊出界", "攻擊掛網", "攻擊被攔", "攻擊犯規", "送球失誤"]: st.button(a, on_click=log_event, args=(a,), use_container_width=True)
-        with e_col3:
-            st.caption("舉球")
-            for a in ["舉球失誤", "連擊"]: st.button(a, on_click=log_event, args=(a,), use_container_width=True)
-        with e_col4:
-            st.caption("防守")
-            for a in ["接發失誤", "接球失誤", "站位失誤", "防守犯規"]: st.button(a, on_click=log_event, args=(a,), use_container_width=True)
-        with e_col5:
-            st.caption("攔網")
-            for a in ["攔網觸網", "攔網失誤"]: st.button(a, on_click=log_event, args=(a,), use_container_width=True)
+# [修正 4] 六欄排版 Helper
+def draw_action_grid(col_labels, btn_configs):
+    """
+    col_labels: list of 6 strings for header (optional)
+    btn_configs: list of 6 lists, each inner list contains tuples (btn_label, action_key)
+    """
+    cols = st.columns(6)
+    # 顯示標題 (可選)
+    for i, title in enumerate(col_labels):
+        cols[i].caption(title)
+        
+    for i in range(6):
+        with cols[i]:
+            buttons = btn_configs[i]
+            if not buttons:
+                st.write("") # Empty placeholder
+            else:
+                for label, key in buttons:
+                    st.button(label, on_click=log_event, args=(key,), use_container_width=True)
 
-with right_panel:
-    st.subheader("📝 紀錄明細")
+# 定義六大類標題
+grid_titles = ["發球", "攔網", "接發", "接球(防守)", "舉球", "攻擊"]
+
+if "繼續" in action_mode:
+    # 欄位對應: 0發球, 1攔網, 2接發, 3接球, 4舉球, 5攻擊
+    btns = [
+        [("發球", "發球")],                         # Col 0
+        [("攔網", "攔網")],                         # Col 1
+        [("接發A", "接發A"), ("接發B", "接發B")],   # Col 2
+        [("接球A", "接球A"), ("接球B", "接球B")],   # Col 3
+        [("舉球", "舉球"), ("舉好", "舉球好球")],    # Col 4
+        [("攻擊", "攻擊"), ("處理", "處理球")]       # Col 5
+    ]
+    draw_action_grid(grid_titles, btns)
+
+elif "得分" in action_mode:
+    # 得分頁面：接發/接球/舉球 通常沒有直接得分 (除非吊球算在攻擊)
+    btns = [
+        [("發球得分", "發球得分")],               # Col 0: 發球
+        [("攔網得分", "攔網得分")],               # Col 1: 攔網
+        [],                                     # Col 2: 接發 (空)
+        [],                                     # Col 3: 接球 (空)
+        [],                                     # Col 4: 舉球 (空)
+        [("攻擊得分", "攻擊得分"), ("吊球得分", "吊球得分"), 
+         ("打手得分", "打手得分"), ("送球得分", "送球得分"),
+         ("後排得分", "後排得分")]                # Col 5: 攻擊
+    ]
+    draw_action_grid(grid_titles, btns)
     
+    st.markdown("---")
+    st.caption("🔻 對手失誤 (我方得分)")
+    # 對手失誤區 (獨立寬欄)
+    oc1, oc2, oc3, oc4 = st.columns(4)
+    opps = ["對手發球出界", "對手發球掛網", "對手攻擊出界", "對手攻擊掛網", "對手送球失誤", "對手舉球失誤", "對手攔網犯規"]
+    for i, o in enumerate(opps):
+        with [oc1, oc2, oc3, oc4][i % 4]:
+            st.button(o, on_click=log_event, args=(o,), use_container_width=True)
+
+elif "失誤" in action_mode:
+    btns = [
+        [("發球出界", "發球出界"), ("發球掛網", "發球掛網"), ("發球犯規", "發球犯規")], # Col 0
+        [("攔網觸網", "攔網觸網"), ("攔網失誤", "攔網失誤")],                         # Col 1
+        [("接發失誤", "接發失誤")],                                                # Col 2
+        [("防守失誤", "接球失誤"), ("防守犯規", "防守犯規"), ("站位失誤", "站位失誤")], # Col 3
+        [("舉球失誤", "舉球失誤"), ("連擊", "連擊")],                               # Col 4
+        [("攻擊出界", "攻擊出界"), ("攻擊掛網", "攻擊掛網"), 
+         ("攻擊被攔", "攻擊被攔"), ("攻擊犯規", "攻擊犯規"), ("送球失誤", "送球失誤")]  # Col 5
+    ]
+    draw_action_grid(grid_titles, btns)
+
+st.write("") 
+
+# --- [修正 2] 統計表摺疊區 ---
+with st.expander("📊 統計數據 & 紀錄明細", expanded=False):
+    
+    # Tab 1: 紀錄明細
+    st.subheader("📝 紀錄明細 (可編輯/刪除)")
     if st.session_state.logs:
         df_logs = pd.DataFrame(st.session_state.logs)
         edit_actions = list(ACTION_EFFECTS.keys())
         
-        # [需求 2] 開啟 num_rows="dynamic" 讓使用者可以刪除
         edited_df = st.data_editor(
             df_logs,
             column_config={
@@ -422,28 +444,23 @@ with right_panel:
             },
             hide_index=True,
             use_container_width=True,
-            height=250,
+            height=300,
             key="log_editor",
-            num_rows="dynamic" # 允許刪除行
+            num_rows="dynamic"
         )
         
-        # [需求 1 & 2] 檢測編輯或刪除
-        # 邏輯：將 edited_df 轉回 list，如果不等於當前的 logs，代表有變動
-        # 注意：我們比較時要忽略由程式自動計算的欄位(結果/比分)，主要看 球員/原始動作/行數
-        
         new_logs = edited_df.to_dict('records')
-        
-        # 簡單判定：如果有變動，就更新並重算
         if new_logs != st.session_state.logs:
             st.session_state.logs = new_logs
-            recalculate_scores() # 呼叫重算
+            recalculate_scores()
             st.rerun()
-            
     else:
         st.info("尚無紀錄")
 
-    # --- 統計表 ---
-    st.subheader("📊 統計")
+    st.markdown("---")
+
+    # Tab 2: 統計表
+    st.subheader("📈 數據統計")
     if st.session_state.logs:
         df = pd.DataFrame(st.session_state.logs)
         
@@ -454,41 +471,35 @@ with right_panel:
         df['ShortName'] = df['球員'].apply(get_short_name)
         stats = df.pivot_table(index='動作', columns='ShortName', aggfunc='size', fill_value=0)
         
-        # [需求 3] 欄位排序邏輯
-        # 1. 先發 7 人 (確保一定在最前)
-        # 2. 替補 (依照 seen_players 的順序，排除先發)
-        # 3. Total
-        # 4. 對手
-        
         ordered_cols = []
-        
-        # 加入見過的球員 (seen_players 已經維護了順序：先發在前，替補在後)
         for p in st.session_state.seen_players:
             ordered_cols.append(p)
-            # 確保該欄位存在於 stats (即使是 0)
-            if p not in stats.columns:
-                stats[p] = 0
+            if p not in stats.columns: stats[p] = 0
         
-        # 過濾出實際存在的欄位 (防呆)
         final_cols = [c for c in ordered_cols]
-        
-        # 計算 Total (不含對手)
         stats["Total"] = stats[[c for c in final_cols if c in stats.columns]].sum(axis=1)
         final_cols.append("Total")
-
-        # 加入對手
-        if "對手" in stats.columns:
-            final_cols.append("對手")
+        if "對手" in stats.columns: final_cols.append("對手")
             
-        # 重建索引
         stats = stats.reindex(columns=final_cols, fill_value=0)
         stats = stats.reindex(ORDERED_ROWS, fill_value=0)
+        
+        # [修正 3] 計算個人總得分/總失誤
+        # 篩選得分列 (Score Rows)
+        score_mask = stats.index.isin(SCORE_ROWS_LIST)
+        stats.loc["個人得分總和"] = stats[score_mask].sum()
+        
+        # 篩選失誤列 (Error Rows)
+        error_mask = stats.index.isin(ERROR_ROWS_LIST)
+        stats.loc["個人失分總和"] = stats[error_mask].sum()
         
         # 鋪色
         def color_rows(row):
             idx = row.name
             color = ''
-            if "繼續" in idx:
+            if idx in ["個人得分總和", "個人失分總和"]:
+                color = 'background-color: #cfe2f3; color: black; font-weight: bold' # 藍色加總
+            elif "繼續" in idx:
                 color = 'background-color: #FFF2CC; color: black'
             elif "得分" in idx or "對手" in idx:
                 color = 'background-color: #D9EAD3; color: black'
@@ -496,9 +507,9 @@ with right_panel:
                 color = 'background-color: #F4CCCC; color: black'
             return [color] * len(row)
 
-        st.dataframe(stats.style.apply(color_rows, axis=1), use_container_width=True, height=600)
+        st.dataframe(stats.style.apply(color_rows, axis=1), use_container_width=True, height=800)
         
-        # Excel 匯出
+        # Excel
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             sheet_name = f"G{st.session_state.game_meta['set']}_Stats"
@@ -509,10 +520,12 @@ with right_panel:
             fmt_y = wb.add_format({'bg_color': '#FFF2CC', 'border': 1})
             fmt_g = wb.add_format({'bg_color': '#D9EAD3', 'border': 1})
             fmt_r = wb.add_format({'bg_color': '#F4CCCC', 'border': 1})
+            fmt_b = wb.add_format({'bg_color': '#CFE2F3', 'border': 1, 'bold': True})
             
             for idx, row_name in enumerate(stats.index):
                 row_num = idx + 1
-                if "繼續" in row_name: ws.set_row(row_num, None, fmt_y)
+                if row_name in ["個人得分總和", "個人失分總和"]: ws.set_row(row_num, None, fmt_b)
+                elif "繼續" in row_name: ws.set_row(row_num, None, fmt_y)
                 elif "得分" in row_name or "對手" in row_name: ws.set_row(row_num, None, fmt_g)
                 elif "失誤" in row_name or "出界" in row_name: ws.set_row(row_num, None, fmt_r)
             
